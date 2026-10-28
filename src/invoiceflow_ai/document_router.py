@@ -22,6 +22,7 @@ import numpy as np
 
 MED_FIELDS = frozenset({"stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien"})
 PAYMENT_KEYS = frozenset({"chi_phi", "bhyt", "bn"})
+HEADER_BAND = 0.35  # header tokens must sit in the top 35% of the page
 
 
 def _fold(text: Any) -> str:
@@ -50,7 +51,8 @@ def _medicine_key(text: str) -> str | None:
     return aliases.get(s)
 
 
-def _payment_key(text: str) -> str | None:
+def payment_header_key(text: str) -> str | None:
+    """Canonical payment-table header key; shared with the payment extractor."""
     s = _compact(text)
     aliases = {
         "chiphi": "chi_phi", "chiphithuchien": "chi_phi",
@@ -102,10 +104,10 @@ def classify_document(raw: dict, height: int) -> dict:
             center_y = (float(box[1]) + float(box[3])) / 2.0
         except (IndexError, TypeError, ValueError):
             continue
-        if center_y > height * .35:
+        if center_y > height * HEADER_BAND:
             continue
         mk = _medicine_key(text)
-        pk = _payment_key(text)
+        pk = payment_header_key(text)
         if mk:
             medicine.add(mk)
         if pk:

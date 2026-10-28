@@ -3,6 +3,7 @@ services:
     build: .
     environment:
       INVOICEFLOW_API_KEY: ${INVOICEFLOW_API_KEY:?Set a strong key in .env}
+      INVOICEFLOW_APPROVER_API_KEY: ${INVOICEFLOW_APPROVER_API_KEY:-}
       INVOICEFLOW_DB_PATH: /app/data/invoiceflow.sqlite3
       INVOICEFLOW_ENABLE_OCR_UPLOAD: 'false'
     volumes:

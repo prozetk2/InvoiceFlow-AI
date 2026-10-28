@@ -4,7 +4,7 @@
 
 - Reads backend-approved CSV only.
 - Validates fields and quantity × unit price.
-- Computes SHA-256 over canonical structured payload.
+- Computes SHA-256 over canonical structured payload and requires it to equal the hash the backend stored at approval (`approved_payload_sha256`, `X-Payload-SHA256`).
 - Creates unique job for `document_id` transactionally.
 - Rejects changed payload for same ID.
 - Runs an **idempotent local SQLite ERP simulator**, not a real RPA bot.

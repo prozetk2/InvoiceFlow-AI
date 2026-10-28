@@ -137,7 +137,7 @@ Input box text: `2MEBEVER MR CAPSUL.ES 200mg`. When the model cites **the same b
 5. Prevent accidental prompt-entry placeholders (`REVIEW`, `APPROVE`) from reaching handoff; keep **server-side** blocking tests and broaden coverage cautiously.
 6. Preserve audit entries. Do not log extraction text or API keys.
 7. Confirm `GET /export.csv` returns HTTP 409 if not `APPROVED`.
-8. Document role-separation shortcomings until OIDC/RBAC with distinct approver is implemented.
+8. Keep approver ≠ reviewer and the optional approver key; document that IDs stay caller-asserted until OIDC/RBAC exists.
 
 ## 7. Procedure D — Change RPA handoff
 

@@ -39,4 +39,4 @@ RPA tables are separate from review DB, and accepted jobs must be sourced from a
 
 ## Version policy
 
-This consolidated baseline is `0.6.0` package version, but backend health endpoint retains API version `0.5.0`. Treat API changes as separately versioned interface changes; do not assume semantic API stability from package number alone.
+Package version is `0.7.0`; the backend health endpoint reports API version `0.6.0` (approval now takes `approver_id`, review accepts `row_count_change_reason`, export adds `X-Payload-SHA256`). Treat API changes as separately versioned interface changes; do not assume semantic API stability from package number alone.

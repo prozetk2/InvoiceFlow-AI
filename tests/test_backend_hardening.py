@@ -20,3 +20,18 @@ def test_placeholder_from_colab_review_rejected(tmp_path):
         assert response.status_code == 422
     assert client.get(f"/api/v1/documents/{doc_id}/export.csv", headers=headers).status_code == 409
     assert client.get(f"/api/v1/documents/{doc_id}", headers=headers).json()["status"] == "PENDING_REVIEW"
+
+
+def test_oversized_image_rejected_before_decoding(tmp_path):
+    import io
+    from PIL import Image
+    app = create_app(db_path=str(tmp_path / "db.sqlite3"), api_key="test-key-with-strong-length")
+    called = []
+    app.state.document_processor = lambda image: called.append(image)
+    client = TestClient(app)
+    stream = io.BytesIO()
+    Image.new("1", (4100, 4100)).save(stream, format="PNG")  # 16.8 MP, tiny file
+    response = client.post("/api/v1/documents/upload", headers={"X-API-Key": "test-key-with-strong-length"},
+                           files={"file": ("big.png", stream.getvalue(), "image/png")})
+    assert response.status_code == 422
+    assert called == []

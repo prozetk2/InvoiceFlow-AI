@@ -110,3 +110,21 @@ if __name__=='__main__':
     test_sample0_like_quality()
     test_unassigned_numeric_blocks()
     print('ALL TESTS PASSED')
+
+
+def test_equal_counts_still_respect_row_distance():
+    # Two anchor rows, one real total on row 2 and one stray number far below:
+    # counts match (2 == 2) but the stray token must not become row 2's total.
+    from invoiceflow_ai.medicine_table_extractor import _align
+    assigned, unused = _align([100, 160], [{"cy": 160, "text": "3000"}, {"cy": 900, "text": "99"}])
+    assert assigned[0] == []
+    assert [t["text"] for t in assigned[1]] == ["3000"]
+    assert [t["text"] for t in unused] == ["99"]
+
+
+def test_ambiguous_numbers_are_not_guessed():
+    from invoiceflow_ai.medicine_table_extractor import _number
+    assert _number("1,520") == 1520 and _number("103.360") == 103360 and _number("68") == 68
+    assert _number("1.520.000") == 1520000 and _number("100 000") == 100000
+    for text in ("0,5", "12 3", "1,52", "1.500,50", "١٢"):
+        assert _number(text) is None, text

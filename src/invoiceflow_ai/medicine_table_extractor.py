@@ -21,6 +21,8 @@ from typing import Callable
 
 import numpy as np
 
+from .validation import parse_vnd_integer
+
 FIELDS = ("stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien")
 AMOUNT_FIELDS = ("so_luong", "don_gia", "thanh_tien")
 
@@ -35,10 +37,8 @@ def _compact(value):
 
 
 def _number(value):
-    s = str(value).strip()
-    if not re.fullmatch(r"\d[\d.,\s]*", s):
-        return None
-    return int(re.sub(r"\D", "", s))
+    # Strict: `0,5` or `12 3` become None (UNPARSEABLE_*), never 5 or 123.
+    return parse_vnd_integer(value)
 
 
 def _unit(value):
@@ -71,9 +71,8 @@ def _align(reference_ys, field_tokens):
     if not n or not m:
         return assigned, list(field_tokens)
     ordered = sorted(field_tokens, key=lambda t: t["cy"])
-    if n == m:
-        return [[token] for token in ordered], []
-
+    # No shortcut when n == m: equal counts do not prove each token sits on
+    # its row (one missing cell plus one stray subtotal also gives n == m).
     gaps = [reference_ys[i+1] - reference_ys[i] for i in range(n-1)]
     gap = max(18, median(gaps)) if gaps else 55
     penalty = gap * .7

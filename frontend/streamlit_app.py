@@ -19,16 +19,18 @@ st.warning("Demo only. Use synthetic/de-identified documents. Never expose the l
 
 api_url = os.getenv("INVOICEFLOW_API_URL", "http://127.0.0.1:8000").rstrip("/")
 api_key = os.getenv("INVOICEFLOW_API_KEY", "")
+# Optional second credential; when the server has one configured, only it can approve.
+approver_key = os.getenv("INVOICEFLOW_APPROVER_API_KEY", "")
 if not api_key:
     st.error("Set INVOICEFLOW_API_KEY in your local environment before starting the UI.")
     st.stop()
 headers = {"X-API-Key": api_key}
 
 
-def api(method: str, path: str, **kwargs):
+def api(method: str, path: str, *, key: str | None = None, **kwargs):
     try:
         with httpx.Client(base_url=api_url, timeout=120) as conn:
-            response = conn.request(method, path, headers=headers, **kwargs)
+            response = conn.request(method, path, headers={"X-API-Key": key or api_key}, **kwargs)
             if response.status_code >= 400:
                 st.error(f"API error {response.status_code}: {response.text[:600]}")
                 return None
@@ -84,8 +86,7 @@ elif tab == "Review & approve":
     orig = doc.get("reviewed_items") or doc["raw_result"].get("items", [])
     cols = ["stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien"]
     if not orig:
-        st.error("No extracted rows to review. Manual back-office entry is required.")
-        st.stop()
+        st.warning("No rows were extracted. Add every row from the source image and give a reason below.")
     items = []
     for r in orig:
         details = r.get("payment_details")
@@ -95,9 +96,13 @@ elif tab == "Review & approve":
             details = {k: details.get(k) for k in
                        ("chi_phi", "bhyt_chi", "so_giam", "benh_nhan_thanh_toan")}
         items.append({**{k: r.get(k) for k in cols}, "payment_details": details})
-    df = pd.DataFrame([{k: v for k, v in row.items() if k != "payment_details"} for row in items])
-    edited = st.data_editor(df, hide_index=True, use_container_width=True, num_rows="fixed",
+    df = pd.DataFrame([{k: v for k, v in row.items() if k != "payment_details"} for row in items],
+                      columns=cols)
+    edited = st.data_editor(df, hide_index=True, use_container_width=True, num_rows="dynamic",
                             key=f"review_editor_{doc_id}")
+    reason = ""
+    if len(edited) != len(orig):
+        reason = st.text_input("Why does the row count differ from the extraction? (required)")
     reviewer = st.text_input("Reviewer ID", value="demo_operator")
     dtype = st.selectbox("Verified document type", ["MEDICINE_INVOICE", "MEDICAL_PAYMENT"],
                          index=1 if doc.get("reviewed_document_type") == "MEDICAL_PAYMENT" else 0)
@@ -107,25 +112,40 @@ elif tab == "Review & approve":
             st.error("You must verify and confirm all fields.")
         else:
             cleaned = edited.to_dict(orient="records")
-            for index, row in enumerate(cleaned):
-                row["stt"] = int(row["stt"])
-                for field in ("so_luong", "don_gia", "thanh_tien"):
-                    row[field] = int(row[field])
-                row["payment_details"] = items[index]["payment_details"] if dtype == "MEDICAL_PAYMENT" else None
-            response = api("PUT", f"/api/v1/documents/{doc_id}/review", json={
-                "reviewer_id": reviewer, "reviewed_document_type": dtype,
-                "confirm_names_and_values": True, "items": cleaned,
-            })
+            empty = [str(i + 1) for i, row in enumerate(cleaned)
+                     if any(pd.isna(row.get(f)) or row.get(f) == "" for f in cols)]
+            if empty:
+                st.error(f"Fill every cell before submitting (rows {', '.join(empty)}).")
+                st.stop()
+            try:
+                for index, row in enumerate(cleaned):
+                    for field in ("stt", "so_luong", "don_gia", "thanh_tien"):
+                        number = float(row[field])
+                        if not number.is_integer():
+                            raise ValueError(field)
+                        row[field] = int(number)
+                    source = items[index]["payment_details"] if index < len(items) else None
+                    row["payment_details"] = source if dtype == "MEDICAL_PAYMENT" else None
+            except (TypeError, ValueError):
+                st.error("STT, quantity, unit price and amount must be whole numbers.")
+                st.stop()
+            body = {"reviewer_id": reviewer, "reviewed_document_type": dtype,
+                    "confirm_names_and_values": True, "items": cleaned}
+            if reason:
+                body["row_count_change_reason"] = reason
+            response = api("PUT", f"/api/v1/documents/{doc_id}/review", json=body)
             if response:
-                st.success("Review saved. Refresh/reopen the document before approval.")
+                st.success("Review saved. A different person must approve it.")
     if doc["status"] == "REVIEWED":
         st.divider()
         st.subheader("Approval — separate action")
         st.dataframe(pd.DataFrame(doc["reviewed_items"]), use_container_width=True)
+        st.caption(f"Reviewed by {doc['reviewer_id']}. Approval must come from a different person.")
+        approver = st.text_input("Approver ID", key=f"approver_{doc_id}")
         approve = st.checkbox("I inspected the REVIEWED database version and authorize CSV export", key=f"approve_{doc_id}")
-        if st.button("Approve reviewed document", disabled=not approve):
-            response = api("POST", f"/api/v1/documents/{doc_id}/approve", json={
-                "reviewer_id": doc["reviewer_id"], "acknowledge_review": True,
+        if st.button("Approve reviewed document", disabled=not (approve and approver.strip())):
+            response = api("POST", f"/api/v1/documents/{doc_id}/approve", key=approver_key or None, json={
+                "approver_id": approver, "acknowledge_review": True,
             })
             if response:
                 st.success("Approved. Reload this document to download CSV.")

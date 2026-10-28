@@ -10,7 +10,6 @@ LLM requests, or live RPA execution are performed here.
 from __future__ import annotations
 
 import csv
-import hashlib
 import hmac
 import io
 import json
@@ -18,16 +17,22 @@ import os
 import re
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .validation import EXPORT_COLUMNS, is_formula_like, is_placeholder_name, payload_sha256
+
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_ITEMS = 200
+MAX_IMAGE_PIXELS = 16_000_000
+DEFAULT_DB_PATH = "data/invoiceflow.sqlite3"
+MIN_REASON_LENGTH = 10
 
 
 def _now() -> str:
@@ -47,11 +52,25 @@ def _load_json(value: str | None) -> Any:
     return json.loads(value) if value else None
 
 
-def _conn(db_path: str) -> sqlite3.Connection:
+@contextmanager
+def _conn(db_path: str) -> Iterator[sqlite3.Connection]:
+    """One transaction per block: commit on success, roll back on error, always close."""
     con = sqlite3.connect(db_path, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
-    return con
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
+
+
+# Columns added in package 0.7.0; applied to older databases on startup.
+_DOCUMENT_MIGRATIONS = {
+    "approver_id": "TEXT",
+    "approved_payload_sha256": "TEXT",
+    "review_version": "INTEGER NOT NULL DEFAULT 0",
+}
 
 
 def _init_db(db_path: str) -> None:
@@ -77,6 +96,10 @@ def _init_db(db_path: str) -> None:
             details_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )""")
+        existing = {r["name"] for r in con.execute("PRAGMA table_info(documents)")}
+        for column, ddl in _DOCUMENT_MIGRATIONS.items():
+            if column not in existing:
+                con.execute(f"ALTER TABLE documents ADD COLUMN {column} {ddl}")
 
 
 def _record(con: sqlite3.Connection, doc_id: str, action: str,
@@ -106,6 +129,9 @@ def _public(row: sqlite3.Row) -> dict:
         "raw_result": _load_json(row["raw_result_json"]),
         "reviewed_items": _load_json(row["reviewed_items_json"]),
         "reviewer_id": row["reviewer_id"],
+        "approver_id": row["approver_id"],
+        "approved_payload_sha256": row["approved_payload_sha256"],
+        "review_version": row["review_version"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -162,12 +188,20 @@ class ReviewedItem(BaseModel):
 
     @field_validator("ten_dich_vu")
     @classmethod
-    def reject_confirmation_placeholders(cls, value: str) -> str:
+    def reject_unsafe_names(cls, value: str) -> str:
         # A literal operator command accidentally became a medicine name in
-        # the original Colab review. CSV-formula-like names remain allowed at
-        # review stage for compatibility and are escaped at CSV export.
-        if value.casefold() in {"review", "approve", "test", "placeholder", "unknown", "n/a"}:
+        # the original Colab review. Formula-like names are rejected here
+        # because the RPA handoff rejects them too: an approved document
+        # must never fail handoff validation.
+        if is_placeholder_name(value):
             raise ValueError("Review/approval command is not a valid product name")
+        return value
+
+    @field_validator("ten_dich_vu", "don_vi_tinh")
+    @classmethod
+    def reject_formula_text(cls, value: str) -> str:
+        if is_formula_like(value):
+            raise ValueError("Text must not start with =, +, - or @ (spreadsheet formula)")
         return value
 
     @model_validator(mode="after")
@@ -183,6 +217,9 @@ class ReviewPayload(BaseModel):
     reviewed_document_type: Literal["MEDICINE_INVOICE", "MEDICAL_PAYMENT"]
     items: list[ReviewedItem] = Field(min_length=1, max_length=MAX_ITEMS)
     confirm_names_and_values: bool
+    # Required when the reviewed row count differs from the extracted one
+    # (rows the extractor missed, or duplicate/garbage rows removed).
+    row_count_change_reason: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def validate_review(self):
@@ -202,8 +239,27 @@ class ReviewPayload(BaseModel):
 
 
 class ApprovePayload(BaseModel):
-    reviewer_id: str = Field(min_length=2, max_length=80)
+    model_config = ConfigDict(extra="forbid")
+    approver_id: str = Field(min_length=2, max_length=80)
     acknowledge_review: bool
+
+
+def _review_changes(originals: list[dict], reviewed: list[dict]) -> dict:
+    """Which fields the reviewer changed, by STT; field names only, no values (R-303)."""
+    by_stt = {o.get("stt"): o for o in originals if isinstance(o, dict)}
+    changed, added = [], []
+    for item in reviewed:
+        original = by_stt.get(item["stt"])
+        if original is None:
+            added.append(item["stt"])
+            continue
+        fields = [c for c in EXPORT_COLUMNS if original.get(c) != item[c]]
+        if fields:
+            changed.append({"stt": item["stt"], "fields": fields})
+    reviewed_stts = {item["stt"] for item in reviewed}
+    removed = [stt for stt in by_stt if stt not in reviewed_stts]
+    return {"changed_rows": changed, "added_stts": added,
+            "removed_original_stts": sorted(removed, key=str)}
 
 
 def _excel_safe(value: Any) -> Any:
@@ -215,20 +271,45 @@ def _excel_safe(value: Any) -> Any:
     return value
 
 
-def create_app(*, db_path: str | None = None, api_key: str | None = None) -> FastAPI:
-    db_path = db_path or os.environ.get("INVOICEFLOW_DB_PATH", "/content/invoiceflow_demo.sqlite3")
+def create_app(*, db_path: str | None = None, api_key: str | None = None,
+               approver_api_key: str | None = None) -> FastAPI:
+    """Build the review API.
+
+    `api_key` is the operator credential. When `approver_api_key` (or
+    INVOICEFLOW_APPROVER_API_KEY) is set, only that key may approve and it
+    may not import or review, so review and approval need two credentials.
+    """
+    db_path = db_path or os.environ.get("INVOICEFLOW_DB_PATH", DEFAULT_DB_PATH)
     api_key = api_key or os.environ.get("INVOICEFLOW_API_KEY")
+    approver_api_key = approver_api_key or os.environ.get("INVOICEFLOW_APPROVER_API_KEY") or None
     if not api_key or len(api_key) < 16:
         raise RuntimeError("Set INVOICEFLOW_API_KEY to a random string of at least 16 characters")
+    if approver_api_key is not None and (len(approver_api_key) < 16 or approver_api_key == api_key):
+        raise RuntimeError("INVOICEFLOW_APPROVER_API_KEY must be at least 16 characters and differ from the operator key")
     _init_db(db_path)
 
-    app = FastAPI(title="InvoiceFlow AI Review API", version="0.5.0")
+    app = FastAPI(title="InvoiceFlow AI Review API", version="0.6.0")
     app.state.db_path = db_path
     app.state.document_processor: Callable | None = None
 
-    def authorize(x_api_key: str | None = Header(default=None)):
-        if x_api_key is None or not hmac.compare_digest(x_api_key, api_key):
-            raise HTTPException(401, "Invalid API key")
+    def authorize(x_api_key: str | None = Header(default=None)) -> str:
+        """Return the caller's role: 'operator' or 'approver'."""
+        if x_api_key is not None:
+            if hmac.compare_digest(x_api_key, api_key):
+                return "operator"
+            if approver_api_key is not None and hmac.compare_digest(x_api_key, approver_api_key):
+                return "approver"
+        raise HTTPException(401, "Invalid API key")
+
+    def require_operator(role: str = Depends(authorize)) -> str:
+        if role != "operator":
+            raise HTTPException(403, "Approver key cannot import or review documents")
+        return role
+
+    def require_approver(role: str = Depends(authorize)) -> str:
+        if approver_api_key is not None and role != "approver":
+            raise HTTPException(403, "Approval requires the approver API key")
+        return role
 
     def store_result(result: dict, *, actor: str, source: str = "colab") -> dict:
         if not isinstance(result, dict) or not isinstance(result.get("items"), list):
@@ -263,14 +344,14 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None) -> Fas
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "invoiceflow-review", "version": "0.5.0"}
+        return {"status": "ok", "service": "invoiceflow-review", "version": "0.6.0"}
 
-    @app.post("/api/v1/documents/import", dependencies=[Depends(authorize)], status_code=201)
+    @app.post("/api/v1/documents/import", dependencies=[Depends(require_operator)], status_code=201)
     def import_document(payload: ImportPayload):
         # Never trust result.ready_for_rpa or LLM/model QA status for approval.
         return store_result(payload.result, actor="import", source=payload.source)
 
-    @app.post("/api/v1/documents/upload", dependencies=[Depends(authorize)], status_code=201)
+    @app.post("/api/v1/documents/upload", dependencies=[Depends(require_operator)], status_code=201)
     def upload_document(file: UploadFile = File(...)):
         if app.state.document_processor is None:
             raise HTTPException(503, "OCR pipeline not configured in this process")
@@ -280,12 +361,12 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None) -> Fas
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "Image exceeds 8 MB")
         try:
-            from PIL import Image, UnidentifiedImageError
-            Image.MAX_IMAGE_PIXELS = 16_000_000
+            from PIL import Image
             image = Image.open(io.BytesIO(data))
-            image.load()
-            if image.width * image.height > 16_000_000:
+            # Dimensions come from the header: reject before decoding pixels.
+            if image.width * image.height > MAX_IMAGE_PIXELS:
                 raise ValueError("Image dimensions too large")
+            image.load()
             image = image.convert("RGB")
         except Exception as exc:
             raise HTTPException(422, "Invalid image") from exc
@@ -322,7 +403,7 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None) -> Fas
                      "details": _load_json(r["details_json"]),
                      "created_at": r["created_at"]} for r in rows]
 
-    @app.put("/api/v1/documents/{document_id}/review", dependencies=[Depends(authorize)])
+    @app.put("/api/v1/documents/{document_id}/review", dependencies=[Depends(require_operator)])
     def review(document_id: str, payload: ReviewPayload):
         with _conn(db_path) as con:
             con.execute("BEGIN IMMEDIATE")
@@ -330,24 +411,36 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None) -> Fas
             if row["status"] not in {"PENDING_REVIEW", "BLOCKED_VALIDATION", "REVIEWED"}:
                 raise HTTPException(409, "Document cannot be reviewed in current status")
             originals = _load_json(row["raw_result_json"]).get("items", [])
-            # Can't silently drop rows; explicit human corrections must cover all.
-            if len(payload.items) != len(originals) or not originals:
-                raise HTTPException(422, "Reviewed row count must equal extracted row count")
+            # Rows are never dropped or added silently: a different row count
+            # (missed rows, garbage rows, or an extraction with no rows at all)
+            # needs a written reason, which goes to the audit trail.
+            reason = (payload.row_count_change_reason or "").strip()
+            if len(payload.items) != len(originals) and len(reason) < MIN_REASON_LENGTH:
+                raise HTTPException(422, "Reviewed row count differs from extracted row count; "
+                                         f"give row_count_change_reason (at least {MIN_REASON_LENGTH} characters)")
             # Reviewer can correct STT, name, money and classify UNKNOWN after inspection.
-            reviewed_json = _as_json([it.model_dump() for it in payload.items])
+            reviewed_items = [it.model_dump() for it in payload.items]
+            reviewed_json = _as_json(reviewed_items)
             con.execute(
                 "UPDATE documents SET reviewed_items_json=?, reviewed_document_type=?, "
-                "reviewer_id=?, status='REVIEWED', updated_at=? WHERE id=?",
+                "reviewer_id=?, status='REVIEWED', review_version=review_version+1, "
+                "approver_id=NULL, approved_payload_sha256=NULL, updated_at=? WHERE id=?",
                 (reviewed_json, payload.reviewed_document_type,
                  payload.reviewer_id, _now(), document_id),
             )
-            _record(con, document_id, "REVIEW_SUBMITTED", payload.reviewer_id, {
-                "row_count": len(payload.items), "reviewed_document_type": payload.reviewed_document_type,
-            })
+            details = {
+                "row_count": len(payload.items), "extracted_row_count": len(originals),
+                "reviewed_document_type": payload.reviewed_document_type,
+                "review_version": row["review_version"] + 1,
+                **_review_changes(originals, reviewed_items),
+            }
+            if len(payload.items) != len(originals):
+                details["row_count_change_reason"] = reason
+            _record(con, document_id, "REVIEW_SUBMITTED", payload.reviewer_id, details)
             return _public(_get(con, document_id))
 
-    @app.post("/api/v1/documents/{document_id}/approve", dependencies=[Depends(authorize)])
-    def approve(document_id: str, payload: ApprovePayload):
+    @app.post("/api/v1/documents/{document_id}/approve")
+    def approve(document_id: str, payload: ApprovePayload, role: str = Depends(require_approver)):
         if not payload.acknowledge_review:
             raise HTTPException(422, "Explicit approval acknowledgement required")
         with _conn(db_path) as con:
@@ -355,42 +448,51 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None) -> Fas
             row = _get(con, document_id)
             if row["status"] != "REVIEWED":
                 raise HTTPException(409, "A completed human review is required before approval")
-            if row["reviewer_id"] != payload.reviewer_id:
-                raise HTTPException(403, "Approval reviewer must match submitted reviewer")
+            # Four-eyes rule: the person who corrected the data cannot release it.
+            if payload.approver_id.strip().casefold() == (row["reviewer_id"] or "").strip().casefold():
+                raise HTTPException(403, "Approver must be a different person than the reviewer")
             data = _load_json(row["reviewed_items_json"])
             if not data:
                 raise HTTPException(409, "No reviewed items")
             # Revalidate persisted reviewed data before release.
             try:
-                ReviewPayload(reviewer_id=payload.reviewer_id,
+                ReviewPayload(reviewer_id=row["reviewer_id"],
                               reviewed_document_type=row["reviewed_document_type"],
                               confirm_names_and_values=True, items=data)
             except Exception as exc:
                 raise HTTPException(409, "Stored review failed validation") from exc
-            con.execute("UPDATE documents SET status='APPROVED',updated_at=? WHERE id=?",
-                        (_now(), document_id))
-            _record(con, document_id, "APPROVED", payload.reviewer_id,
-                    {"row_count": len(data), "export_eligible": True})
+            digest = payload_sha256(data)
+            con.execute("UPDATE documents SET status='APPROVED', approver_id=?, "
+                        "approved_payload_sha256=?, updated_at=? WHERE id=?",
+                        (payload.approver_id, digest, _now(), document_id))
+            _record(con, document_id, "APPROVED", payload.approver_id, {
+                "row_count": len(data), "export_eligible": True, "role": role,
+                "review_version": row["review_version"], "payload_sha256": digest,
+            })
             return _public(_get(con, document_id))
 
-    @app.get("/api/v1/documents/{document_id}/export.csv", dependencies=[Depends(authorize)])
-    def export_csv(document_id: str):
+    @app.get("/api/v1/documents/{document_id}/export.csv")
+    def export_csv(document_id: str, role: str = Depends(authorize)):
         with _conn(db_path) as con:
             con.execute("BEGIN IMMEDIATE")
             row = _get(con, document_id)
             if row["status"] != "APPROVED":
                 raise HTTPException(409, "Document requires approval before export")
             items = _load_json(row["reviewed_items_json"])
+            digest = payload_sha256(items)
+            # Detect stored data changed after approval (e.g. edited in the DB file).
+            if not row["approved_payload_sha256"] or not hmac.compare_digest(digest, row["approved_payload_sha256"]):
+                raise HTTPException(409, "Approved payload hash mismatch: manual investigation required")
             output = io.StringIO()
             writer = csv.writer(output, lineterminator="\r\n")
-            cols = ["stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien"]
-            writer.writerow(cols)
+            writer.writerow(EXPORT_COLUMNS)
             for item in items:
-                writer.writerow([_excel_safe(item[c]) for c in cols])
-            _record(con, document_id, "CSV_EXPORTED", "api_key_user", {"row_count": len(items)})
+                writer.writerow([_excel_safe(item[c]) for c in EXPORT_COLUMNS])
+            _record(con, document_id, "CSV_EXPORTED", role, {"row_count": len(items), "payload_sha256": digest})
             csv_payload = output.getvalue()
             return Response(csv_payload.encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": f'attachment; filename="invoiceflow_{document_id}.csv"',
-                                     "Cache-Control": "no-store"})
+                                     "Cache-Control": "no-store",
+                                     "X-Payload-SHA256": digest})
 
     return app
