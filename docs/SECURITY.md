@@ -15,12 +15,14 @@ Even a patient-free-looking receipt might contain personal information: patient 
 - Csv formula-injection escaping and idempotent handoff checks.
 - No external Gemini API call from the default HTTP upload handler.
 - OCR text treated as untrusted prompt data.
+- Uploaded source images are stored as review evidence in the same local SQLite file (`document_images`), served only with an API key and `Cache-Control: no-store`. Audit events record the image SHA-256 and size, never its bytes. Set `INVOICEFLOW_STORE_IMAGES=false` to keep no images (reviewers then check the source file themselves).
+- Evaluation reports list missed STTs and wrong field names only, never names or amounts.
 
 ## Controls NOT present (must be addressed before production)
 
 - Identity federation/OIDC and granular RBAC (reviewer ≠ approver is enforced by ID and an optional second API key, but IDs are not bound to a login).
 - Full audit immutability or SIEM integration.
-- Encrypted patient data at rest, protected backup keys or retention policies.
+- Encrypted patient data at rest (including stored source images), protected backup keys or retention policies.
 - Privacy-compliant PHI redaction/DLP with measurable recall.
 - Endpoint rate limits, upload malware scanning, reverse-proxy WAF/HTTPS in the dev server.
 - Request-level model disclosure consent and independent data-controller review.

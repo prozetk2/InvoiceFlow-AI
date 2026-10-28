@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from .document_router import HEADER_BAND, payment_header_key
+from .document_totals import footer_amount, reconcile_total
 from .header_detection import compact
 from .validation import parse_vnd_integer
 
@@ -90,8 +91,14 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
     boundaries = [(a["cy"] + b["cy"]) / 2 for a, b in zip(anchors, anchors[1:])]
     gap = (anchors[1]["cy"] - anchors[0]["cy"]) if len(anchors) > 1 else 70
     start_y = max(header_bottom + 1, anchors[0]["cy"] - gap / 2)
-    footer_values = [t["cy"] for t in tokens if t["cy"] > anchors[-1]["cy"] and _is_footer(t["text"])]
-    footer_y = min(footer_values) if footer_values else float("inf")
+    footers = [t for t in tokens if t["cy"] > anchors[-1]["cy"] and _is_footer(t["text"])]
+    footer = min(footers, key=lambda t: t["cy"]) if footers else None
+    footer_y = footer["cy"] if footer else float("inf")
+    # Printed column totals on the footer line ("Tổng cộng"), one per payment column.
+    document_totals = {field: footer_amount(tokens, footer, centers[field], row_tolerance=25,
+                                            column_tolerance=55, allow_label_amount=False)
+                       if footer else None
+                       for field in PAYMENT_FIELDS}
 
     # Financial amounts belong near numbered service anchors, not quantity notes.
     amounts = [{k: [] for k in PAYMENT_FIELDS} for _ in anchors]
@@ -104,10 +111,11 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
             continue
         nearest = min(PAYMENT_FIELDS, key=lambda field: abs(token["cx"] - centers[field]))
         if abs(token["cx"] - centers[nearest]) <= 55:
-            amounts[i][nearest].append(number)
+            amounts[i][nearest].append((number, token["id"]))
 
     fragments = [[] for _ in anchors]
     notes = [[] for _ in anchors]
+    note_box_ids = [[] for _ in anchors]
     anchor_map = {a["id"]: a for a in anchors}
     for token in sorted(tokens, key=lambda t: (t["cy"], t["x1"])):
         if not start_y <= token["cy"] < footer_y or token["cx"] >= cost["cx"] - 35:
@@ -116,7 +124,10 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
             continue
         i = bisect_right(boundaries, token["cy"])
         text = anchor_map[token["id"]]["start_name"] if token["id"] in anchor_map else token["text"]
-        notes[i].extend(m.group(0) for m in QTY.finditer(text))
+        found_notes = [m.group(0) for m in QTY.finditer(text)]
+        notes[i].extend(found_notes)
+        if found_notes:
+            note_box_ids[i].append(token["id"])
         text = QTY.sub(" ", text).strip()
         if text and any(c.isalpha() for c in text):
             fragments[i].append({"text": text, "confidence": token["score"], "box_id": token["id"]})
@@ -134,9 +145,12 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
         if not unit:
             warnings.append("MISSING_OR_AMBIGUOUS_UNIT")
         details = {}
+        evidence = {"stt": [anchor["id"]], "ten_dich_vu": [p["box_id"] for p in fragments[i]],
+                    "so_luong": note_box_ids[i], "don_vi_tinh": note_box_ids[i]}
         for field in PAYMENT_FIELDS:
             cells = amounts[i][field]
-            details[field] = cells[0] if len(cells) == 1 else None
+            details[field] = cells[0][0] if len(cells) == 1 else None
+            evidence[field] = [box_id for _, box_id in cells]
             if len(cells) != 1:
                 warnings.append("MISSING_OR_AMBIGUOUS_" + field.upper())
         calculated = None
@@ -148,6 +162,7 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
         if not name:
             warnings.append("MISSING_SERVICE_NAME")
         gross = details["chi_phi"]
+        evidence["don_gia"] = evidence["thanh_tien"] = evidence["chi_phi"]
         if quantity != 1:
             warnings.append("UNIT_PRICE_NOT_DIRECTLY_AVAILABLE")
         items.append({
@@ -156,12 +171,13 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
             "don_gia": gross if quantity == 1 else None, "thanh_tien": gross,
             "payment_details": {**details, "calculated_patient_payment": calculated},
             "quantity_notes": notes[i], "name_source_fragments": fragments[i],
+            "evidence_box_ids": evidence,
             "name_verification": "UNVERIFIED", "requires_review": bool(warnings),
             "warnings": warnings,
         })
     return {"status": "EXTRACTED_PAYMENT", "document_type": "MEDICAL_PAYMENT", "items": items,
             "detected_rows": len(items), "review_count": sum(bool(i["warnings"]) for i in items),
-            "ready_for_rpa": False, "column_centers": centers,
+            "ready_for_rpa": False, "column_centers": centers, "document_totals": document_totals,
             "processing_time": round(time.perf_counter() - started, 3)}
 
 
@@ -189,10 +205,25 @@ def finalize_medical_payment(extraction: dict) -> dict:
         item["requires_review"] = True
         item["validation_errors"] = [p for p in problem if p != "NAME_NEEDS_HUMAN_CONFIRMATION"]
         errors += bool(item["validation_errors"])
-    out["qa_status"] = "BLOCKED_VALIDATION_ERRORS" if errors else "PENDING_HUMAN_REVIEW"
+    # Column sums vs the printed footer totals: catches a whole missed service row.
+    printed = out.get("document_totals") or {}
+    checks = [reconcile_total(field, [(it.get("payment_details") or {}).get(field) for it in items],
+                              printed.get(field)) for field in PAYMENT_FIELDS]
+    out["total_checks"] = checks
+    mismatch = any(c["status"] == "MISMATCH" for c in checks)
+    out.setdefault("warnings", [])
+    if mismatch:
+        out["warnings"].append("TOTAL_MISMATCH")
+    elif all(c["status"] == "NOT_FOUND" for c in checks):
+        out["warnings"].append("DOCUMENT_TOTAL_NOT_FOUND")
+    out["qa_status"] = ("BLOCKED_VALIDATION_ERRORS" if errors else
+                        "BLOCKED_TOTAL_MISMATCH" if mismatch else "PENDING_HUMAN_REVIEW")
     out["review_count"] = len(items)
     out["qa_summary"] = {"total_rows": len(items), "validation_error_rows": errors,
-                         "names_pending_confirmation": len(items)}
+                         "names_pending_confirmation": len(items),
+                         "total_check_status": ("MISMATCH" if mismatch else
+                                                "MATCH" if all(c["status"] == "MATCH" for c in checks) else
+                                                "INCOMPLETE")}
     return out
 
 

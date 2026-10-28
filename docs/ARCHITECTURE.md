@@ -34,6 +34,12 @@ InvoiceFlow AI is a local portfolio demonstration of document ingestion, OCR/KIE
 
 **ADR-006 — Local handoff before real RPA.** SQLite transactionality/idempotency allow safe demonstration and fault injection without interacting with a live ERP.
 
+**ADR-007 — Document total cross-check.** Row arithmetic (`quantity × unit price = amount`) cannot reveal a row the extractor never saw. Extractors read the printed footer total and compare it with the sum of row amounts; a mismatch blocks with `BLOCKED_TOTAL_MISMATCH` for review. The footer value is OCR evidence too, so it never rewrites a row, and a missing footer is a warning, not a block.
+
+**ADR-008 — Evidence boxes, not just values.** Extractors cite the OCR box ids behind each field; the pipeline stores box geometry (coordinates, not text a second time); the backend keeps the exact uploaded image bytes. The review UI draws each row's boxes on that image, so a reviewer checks the pixels a value came from. An image attached later to an imported result must match the OCR image size, or the boxes would point at the wrong pixels.
+
+**ADR-009 — Offline, replayable evaluation.** `invoiceflow eval` implements docs/EVALUATION.md. Saved OCR results replay through the current routing/extraction code (`invoiceflow eval-predict`), so extractor changes are compared on identical OCR without model downloads. A synthetic set with one named failure per document is pinned by a regression test.
+
 ## Known limitations
 
 - Header aliases are hand-designed for the supported layouts, not a general classifier.

@@ -1,0 +1,31 @@
+{
+  "document_family": "MEDICINE_INVOICE",
+  "split": "test",
+  "synthetic_case": "OCR name typo and lost accents",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "MEBEVER MR CAPSULES 200mg",
+      "so_luong": 30,
+      "don_vi_tinh": "Viên",
+      "don_gia": 4950,
+      "thanh_tien": 148500
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Vitamin C 500mg",
+      "so_luong": 20,
+      "don_vi_tinh": "Viên",
+      "don_gia": 600,
+      "thanh_tien": 12000
+    },
+    {
+      "stt": 3,
+      "ten_dich_vu": "Kem bôi da 15g",
+      "so_luong": 1,
+      "don_vi_tinh": "Tuýp",
+      "don_gia": 38000,
+      "thanh_tien": 38000
+    }
+  ]
+}

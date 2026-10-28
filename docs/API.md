@@ -10,6 +10,9 @@ Default server binds `127.0.0.1:8000`. `X-API-Key: <INVOICEFLOW_API_KEY>` requir
 | GET | `/api/v1/documents?limit=20` | Document metadata, limit 1..100 |
 | GET | `/api/v1/documents/{id}` | Raw result, reviewed items, current status |
 | GET | `/api/v1/documents/{id}/audit` | Audit actions (not raw payloads) |
+| GET | `/api/v1/documents/{id}/evidence` | OCR boxes behind each extracted field, printed totals and total checks |
+| GET | `/api/v1/documents/{id}/image` | Stored source image (404 if none); `Cache-Control: no-store` |
+| PUT | `/api/v1/documents/{id}/image` | Attach the source image to an imported result, once, before approval; must match the OCR image size (operator key) |
 | PUT | `/api/v1/documents/{id}/review` | Correct all rows and explicitly confirm values |
 | POST | `/api/v1/documents/{id}/approve` | Approve a saved REVIEWED record |
 | GET | `/api/v1/documents/{id}/export.csv` | CSV only if APPROVED; else HTTP 409 |
@@ -66,7 +69,7 @@ All rows must be included; no silent omission. If the reviewed row count differs
 | --- | --- |
 | 401 | API key invalid/missing |
 | 404 | Document ID not found |
-| 409 | Invalid workflow state / export before approval |
+| 409 | Invalid workflow state / export before approval / image already attached |
 | 413 | Too-large image or extraction result |
 | 415 | Unsupported uploaded MIME type |
 | 422 | Invalid schema, values or arithmetic |

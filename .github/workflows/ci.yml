@@ -23,3 +23,7 @@ jobs:
         run: python -m pytest
       - name: Synthetic end-to-end demo
         run: python scripts/demo_workflow.py
+      - name: Evaluation harness on the synthetic set
+        run: |
+          invoiceflow eval-predict eval/synthetic/ocr --output eval/synthetic/pred
+          invoiceflow eval eval/synthetic/gt eval/synthetic/pred --split test >> "$GITHUB_STEP_SUMMARY"

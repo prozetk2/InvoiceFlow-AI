@@ -373,6 +373,22 @@ def llm_fallback_from_ocr(
         }
 
 
+def ocr_box_geometry(raw: dict) -> list[list[int] | None]:
+    """[x1, y1, x2, y2] per OCR box, indexed by box id; coordinates only, no text.
+
+    Lets the review UI draw the evidence behind each field without storing
+    the OCR text a second time. A malformed box becomes None.
+    """
+    geometry = []
+    for box in raw.get("rec_boxes", []) or []:
+        try:
+            x1, y1, x2, y2 = (int(z) for z in box)
+            geometry.append([x1, y1, x2, y2])
+        except (TypeError, ValueError):
+            geometry.append(None)
+    return geometry
+
+
 def process_document_with_fallback(
     image: Any,
     ocr_engine: Any,
@@ -413,5 +429,7 @@ def process_document_with_fallback(
         "ocr_inference_count": 1,
         "ocr_cache_hits": cache.cache_hits,
         "pipeline_processing_time": round(time.perf_counter() - started, 3),
+        "image_size": [int(rgb.shape[1]), int(rgb.shape[0])],
+        "ocr_boxes": ocr_box_geometry(raw),
     })
     return result

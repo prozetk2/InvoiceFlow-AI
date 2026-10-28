@@ -1,0 +1,35 @@
+{
+  "document_family": "MEDICAL_PAYMENT",
+  "split": "test",
+  "synthetic_case": "patient amount misread as an irregular number",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "Khám chuyên khoa",
+      "so_luong": 1,
+      "don_vi_tinh": "Lần",
+      "don_gia": 120000,
+      "thanh_tien": 120000,
+      "payment_details": {
+        "chi_phi": 120000,
+        "bhyt_chi": 60000,
+        "so_giam": 0,
+        "benh_nhan_thanh_toan": 60000
+      }
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Chụp X-quang",
+      "so_luong": 1,
+      "don_vi_tinh": "Lần",
+      "don_gia": 180000,
+      "thanh_tien": 180000,
+      "payment_details": {
+        "chi_phi": 180000,
+        "bhyt_chi": 90000,
+        "so_giam": 0,
+        "benh_nhan_thanh_toan": 90000
+      }
+    }
+  ]
+}

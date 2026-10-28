@@ -58,3 +58,7 @@ secrets.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Evaluation runs: predictions and reports are regenerated, labels/fixtures are committed
+/eval/**/pred/
+/eval/**/report*.json
