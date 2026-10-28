@@ -35,7 +35,7 @@ def make_doc(c, *, approve=True):
                                           "don_vi_tinh": "Viên", "don_gia": 1000, "thanh_tien": 2000}]})
         assert response.status_code == 200
         response = c.post(f"/api/v1/documents/{doc_id}/approve", headers=HEADERS,
-                          json={"reviewer_id": "tester", "acknowledge_review": True})
+                          json={"approver_id": "second_person", "acknowledge_review": True})
         assert response.status_code == 200
     return doc_id
 
@@ -70,7 +70,8 @@ def test_unapproved_document_blocked(env):
 
 
 def test_bad_payloads():
-    for kwargs in ({"name":"REVIEW"}, {"name":"'=SUM(1+1)"}, {"total":"999"}):
+    for kwargs in ({"name":"REVIEW"}, {"name":"Approved."}, {"name":"'=SUM(1+1)"}, {"name":"-gel"},
+                   {"total":"999"}, {"total":"\u0662\u0660\u0660\u0660"}):
         with pytest.raises(HandoffError):
             parse_approved_csv(make_csv(**kwargs))
     assert parse_approved_csv(make_csv())[0]["thanh_tien"] == 2000
@@ -81,6 +82,23 @@ def test_duplicate_stt_rejected():
     lines = text.splitlines()
     with pytest.raises(HandoffError, match="duplicate"):
         parse_approved_csv(("\n".join(lines + [lines[-1]])).encode("utf-8-sig"))
+
+
+def test_csv_not_matching_approved_hash_rejected(env):
+    c, db = env
+    id_ = make_doc(c)
+
+    class TamperingClient:
+        """Returns a CSV that differs from what the backend approved."""
+        def get(self, url, headers):
+            response = c.get(url, headers=headers)
+            if url.endswith("export.csv"):
+                response._content = make_csv(name="Synthetic pill", total="2000").replace(b"Synthetic pill", b"Other pill")
+            return response
+
+    with pytest.raises(HandoffError, match="approved payload hash"):
+        submit_approved_job(client=TamperingClient(), api_headers=HEADERS, document_id=id_, db_path=db)
+    assert get_demo_erp_rows(document_id=id_, db_path=db) == []
 
 
 def test_unknown_job_cannot_execute(env):

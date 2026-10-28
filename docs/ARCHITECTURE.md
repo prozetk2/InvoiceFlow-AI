@@ -41,7 +41,7 @@ InvoiceFlow AI is a local portfolio demonstration of document ingestion, OCR/KIE
 - Product names can contain OCR typos despite high confidence; current UI requires full operator verification.
 - No asynchronous processing queue, retry scheduler or production monitoring.
 - Local SQLite has no encryption-at-rest in this demo.
-- Shared API key and same reviewer/approver identity is not production-grade segregation of duties.
+- Reviewer and approver must be different IDs, and an optional second API key separates the credentials, but IDs are caller-asserted: not production-grade segregation of duties.
 - Backend upload keeps external fallback disabled, even when Gemini is configured for CLI.
 - None of the current integrations operates a real ERP or remote RPA desktop.
 

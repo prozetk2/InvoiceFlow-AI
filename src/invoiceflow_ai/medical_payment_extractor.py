@@ -14,7 +14,9 @@ from typing import Any
 
 import numpy as np
 
+from .document_router import HEADER_BAND, payment_header_key
 from .header_detection import compact
+from .validation import parse_vnd_integer
 
 PAYMENT_FIELDS = ("chi_phi", "bhyt_chi", "so_giam", "benh_nhan_thanh_toan")
 SERVICE = re.compile(r"^\s*(\d{1,2})\s*[.)]?\s+(.+)$")
@@ -22,8 +24,7 @@ QTY = re.compile(r"\(\s*S[\s.\-_]*L[^:)]{0,20}:\s*(\d+)\s*([^)]+)\)", re.I)
 
 
 def _money(text: str) -> int | None:
-    value = str(text).strip()
-    return int(re.sub(r"\D", "", value)) if re.fullmatch(r"\d[\d.,\s]*", value) else None
+    return parse_vnd_integer(text)
 
 
 def _is_footer(text: str) -> bool:
@@ -58,10 +59,12 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
                 "warnings": [message], "ready_for_rpa": False,
                 "processing_time": round(time.perf_counter() - started, 3)}
 
-    top = [t for t in tokens if t["cy"] < height * 0.25]
+    # Same header band and aliases as the router, so a document routed here
+    # is not rejected for headers the router already accepted.
+    top = [t for t in tokens if t["cy"] <= height * HEADER_BAND]
     def header(key: str):
-        return next((t for t in top if compact(t["text"]) == key), None)
-    cost, insurance, patient = header("chiphi"), header("bhyt"), header("bn")
+        return next((t for t in top if payment_header_key(t["text"]) == key), None)
+    cost, insurance, patient = header("chi_phi"), header("bhyt"), header("bn")
     if any(v is None for v in (cost, insurance, patient)):
         return fail("PAYMENT_HEADERS_NOT_FOUND")
     discounts = [t for t in top if compact(t["text"]) in ("so", "sogiam", "giam")
@@ -75,7 +78,7 @@ def extract_medical_payment(image: Any, ocr_engine: Any) -> dict:
 
     anchors = []
     for token in tokens:
-        if token["cy"] <= height * 0.23 or token["cx"] >= cost["cx"] - 40:
+        if token["cy"] <= header_bottom or token["cx"] >= cost["cx"] - 40:
             continue
         match = SERVICE.match(token["text"])
         if match:

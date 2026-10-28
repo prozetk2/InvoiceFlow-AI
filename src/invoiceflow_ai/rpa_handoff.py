@@ -10,17 +10,19 @@ appropriate privacy/security protections. Local demonstration only.
 from __future__ import annotations
 
 import csv
-import hashlib
+import hmac
 import io
 import json
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-COLUMNS = ("stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien")
-PLACEHOLDERS = {"REVIEW", "APPROVE", "TEST", "PLACEHOLDER", "N/A", "UNKNOWN"}
+from .validation import EXPORT_COLUMNS, is_formula_like, is_placeholder_name, payload_sha256
+
+COLUMNS = EXPORT_COLUMNS
 MAX_CSV_BYTES = 2_000_000
 MAX_ROWS = 200
 
@@ -32,10 +34,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _connection(db_path: str) -> sqlite3.Connection:
+@contextmanager
+def _connection(db_path: str) -> Iterator[sqlite3.Connection]:
+    """One transaction per block: commit on success, roll back on error, always close."""
     con = sqlite3.connect(db_path, timeout=30)
     con.row_factory = sqlite3.Row
-    return con
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 def init_handoff_db(db_path: str) -> None:
@@ -92,7 +100,7 @@ def parse_approved_csv(csv_bytes: bytes) -> list[dict[str, Any]]:
         if any(v is None for v in raw.values()) or None in raw:
             raise HandoffError("CSV row shape is invalid")
         for field in ("stt", "so_luong", "don_gia", "thanh_tien"):
-            if not re.fullmatch(r"\d+", (raw.get(field) or "").strip()):
+            if not re.fullmatch(r"[0-9]+", (raw.get(field) or "").strip()):
                 raise HandoffError(f"Invalid integer in {field}")
         stt = int(raw["stt"])
         qty = int(raw["so_luong"])
@@ -103,12 +111,13 @@ def parse_approved_csv(csv_bytes: bytes) -> list[dict[str, Any]]:
         if stt < 1 or qty < 1 or stt in seen:
             raise HandoffError("Invalid or duplicate STT / quantity")
         seen.add(stt)
-        if not name or name.upper() in PLACEHOLDERS or len(name) > 500:
+        if not name or is_placeholder_name(name) or len(name) > 500:
             raise HandoffError("Invalid product/service name")
         if not unit or len(unit) > 40:
             raise HandoffError("Invalid unit")
-        # Block formula-like CSV text, even if prefixed with a quote by exporter.
-        if name.lstrip().lstrip("'").lstrip().startswith(("=", "+", "-", "@")):
+        # Same rule the backend applies at review, so an approved row passes;
+        # also catches the exporter's quote prefix.
+        if is_formula_like(name) or is_formula_like(unit):
             raise HandoffError("Potential spreadsheet formula injection")
         if price * qty != total:
             raise HandoffError(f"Arithmetic mismatch in row {stt}")
@@ -151,7 +160,14 @@ def submit_approved_job(*, client, api_headers: dict, document_id: str, db_path:
         raise HandoffError(f"Approved CSV export failed: HTTP {export_response.status_code}")
     rows = parse_approved_csv(export_response.content)
     serialized = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    digest = payload_sha256(rows)
+    # The backend hashed the payload at approval; the CSV received must match it.
+    approved_digest = document.get("approved_payload_sha256")
+    header_digest = export_response.headers.get("X-Payload-SHA256")
+    if not approved_digest or not header_digest:
+        raise HandoffError("Backend did not provide the approved payload hash")
+    if not (hmac.compare_digest(digest, approved_digest) and hmac.compare_digest(digest, header_digest)):
+        raise HandoffError("Exported CSV does not match the approved payload hash")
 
     init_handoff_db(db_path)
     with _connection(db_path) as con:

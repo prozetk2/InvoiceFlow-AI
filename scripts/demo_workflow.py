@@ -43,7 +43,7 @@ def run() -> None:
             reviewed.raise_for_status()
             assert reviewed.json()["status"] == "REVIEWED"
             approved = client.post(f"/api/v1/documents/{doc_id}/approve", headers=headers,
-                                   json={"reviewer_id": "synthetic_review", "acknowledge_review": True})
+                                   json={"approver_id": "synthetic_approver", "acknowledge_review": True})
             approved.raise_for_status()
             assert approved.json()["status"] == "APPROVED"
             db_path = str(Path(folder) / "rpa.sqlite3")

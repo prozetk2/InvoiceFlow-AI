@@ -52,7 +52,7 @@ These are repository-level **non-negotiable invariants** for InvoiceFlow AI. The
 
 ## 4. Backend / CSV / handoff
 
-**R-301 — Local API key:** All document routes require valid `X-API-Key`. A single shared API key is **demo only**; do not claim production RBAC or separate approver identity.
+**R-301 — Local API key:** All document routes require valid `X-API-Key`. API keys are **demo only**: an optional `INVOICEFLOW_APPROVER_API_KEY` separates the approve credential and `approver_id` must differ from `reviewer_id`, but identities are caller-asserted; do not claim production RBAC.
 
 **R-302 — Export requires approval:** `GET /export.csv` must return an error unless the persisted status is exactly `APPROVED`. Never enable export because a model suggests `ready_for_rpa=True`.
 

@@ -82,3 +82,15 @@ def test_unknown_abstains_without_explicit_llm_permission():
     assert result["llm_inference_count"] == 0
     assert result["ocr_inference_count"] == 1
     assert ocr.calls == 1
+
+
+def test_payment_header_aliases_accepted_by_router_and_extractor():
+    # Full-word headers ("Bảo hiểm y tế", "Bệnh nhân") route to MEDICAL_PAYMENT,
+    # so the payment extractor must accept them too instead of failing.
+    raw = payment_data()
+    raw["rec_texts"] = [{"BHYT": "Bảo hiểm y tế", "BN": "Bệnh nhân"}.get(t, t) for t in raw["rec_texts"]]
+    result = process_invoice(Image.new("RGB", (700, 400)), FakeOCR(raw))
+    assert result["document_type"] == "MEDICAL_PAYMENT"
+    assert result["status"] == "EXTRACTED_PAYMENT", result.get("warnings")
+    assert len(result["items"]) == 3
+    assert result["ready_for_rpa"] is False

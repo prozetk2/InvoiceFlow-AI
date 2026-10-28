@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    INVOICEFLOW_DB_PATH=/app/data/invoiceflow.sqlite3
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir . && useradd -m -u 10001 invoiceflow && mkdir -p /app/data && chown invoiceflow:invoiceflow /app/data

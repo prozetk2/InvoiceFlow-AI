@@ -244,13 +244,17 @@ stateDiagram-v2
     PENDING_REVIEW --> REVIEWED: PUT review, explicit confirmation
     BLOCKED_VALIDATION --> REVIEWED: Manual correction and review
     REVIEWED --> REVIEWED: Resubmit corrections
-    REVIEWED --> APPROVED: POST approve
+    REVIEWED --> APPROVED: POST approve (different person)
     APPROVED --> [*]: Export CSV / demo handoff
 ```
 
-The backend validates *persisted* reviewed rows, integer quantities, nonnegative prices, unique STT and `so_luong × don_gia = thanh_tien`. For BHYT tables it also validates `chi_phi - bhyt_chi - so_giam = benh_nhan_thanh_toan`. It records audit events and prevents CSV export before approval.
+The backend validates *persisted* reviewed rows, integer quantities, nonnegative prices, unique STT and `so_luong × don_gia = thanh_tien`. For BHYT tables it also validates `chi_phi - bhyt_chi - so_giam = benh_nhan_thanh_toan`. Names and units that a spreadsheet could evaluate (`=`, `+`, `-`, `@`) and placeholder words (`REVIEW`, `APPROVE`, ...) are rejected at review, using the same rules as the RPA handoff (`validation.py`), so an approved document never fails handoff. It records audit events and prevents CSV export before approval.
 
-**Demo authentication limitation:** A single API key controls both review and approval and the same `reviewer_id` is used; this is **not** role separation or production-grade authentication. Implement OIDC/RBAC and a distinct approver identity before real deployments.
+- **Missed rows:** the reviewer may add or remove rows (or enter rows for an extraction that found none) only with a written `row_count_change_reason`; the audit event records which STTs were added, removed or changed, by field name only.
+- **Four-eyes approval:** `approver_id` must differ from the reviewer. Set `INVOICEFLOW_APPROVER_API_KEY` to require a second credential: then only that key can approve and it cannot import or review.
+- **Payload hash:** approval stores the SHA-256 of the canonical approved rows. Export returns it in `X-Payload-SHA256` and refuses (HTTP 409) if stored data no longer matches; the RPA handoff checks the CSV against it.
+
+**Demo authentication limitation:** reviewer and approver IDs are still typed by the caller, not bound to a login. Two API keys separate the two credentials, but this is **not** production-grade authentication. Implement OIDC/RBAC before real deployments.
 
 ## RPA handoff (local ERP simulator only)
 
@@ -308,7 +312,7 @@ This GitHub package uses `invoiceflow_ai.pipeline.process_invoice` as the main P
 1. Acquire more appropriately licensed, **de-identified** invoices per layout; annotate document type and fields.
 2. Evaluate end-to-end extraction on held-out documents and report per-field coverage, errors, abstention, and OCR latency.
 3. Add manual name-verification UI with original-image crops and bounding boxes.
-4. Introduce OIDC/RBAC, distinct reviewer/approver roles, secret vault, encrypted storage and retention rules.
+4. Introduce OIDC/RBAC with per-user identities (reviewer ≠ approver is already enforced by ID and optional second key), secret vault, encrypted storage and retention rules.
 5. Implement a real Power Automate Desktop or UiPath adapter only in a controlled target ERP test environment.
 6. Add queue/worker architecture for OCR jobs and observability with redaction.
 

@@ -18,7 +18,7 @@ Even a patient-free-looking receipt might contain personal information: patient 
 
 ## Controls NOT present (must be addressed before production)
 
-- Identity federation/OIDC, granular RBAC and distinct reviewer/approver roles.
+- Identity federation/OIDC and granular RBAC (reviewer ≠ approver is enforced by ID and an optional second API key, but IDs are not bound to a login).
 - Full audit immutability or SIEM integration.
 - Encrypted patient data at rest, protected backup keys or retention policies.
 - Privacy-compliant PHI redaction/DLP with measurable recall.
@@ -44,7 +44,7 @@ Even a patient-free-looking receipt might contain personal information: patient 
 | LLM invents amount | Numeric evidence must be present; QA blocks mismatch | Evaluate on independent adversarial sets |
 | Misleading OCR confidence | Names remain unverified | UI highlighting and independent human verification |
 | Staff mistakes `REVIEW` for a medication name | Server-side review validator rejects placeholder names | Extend contextual placeholder detection and automated tests |
-| Unapproved export | HTTP 409 unless APPROVED | Distinct approver identity and RBAC |
+| Unapproved export | HTTP 409 unless APPROVED; approver ≠ reviewer; approved-payload hash checked at export and handoff | OIDC identities and RBAC |
 | CSV formula injection | Export prefix escaping, handoff rejects suspicious formulas | Further test with target spreadsheet client |
 | Repeated bot execution | Immutable content hash, unique DB key, SQLite transaction | Distributed idempotency token for remote ERP |
 | External data disclosure | Gemini off by default, explicit CLI opt-in | DLP/consent, provider contracts and logging policy |
