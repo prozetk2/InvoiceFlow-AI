@@ -21,6 +21,7 @@ from typing import Callable
 
 import numpy as np
 
+from .document_totals import footer_amount, reconcile_total
 from .validation import parse_vnd_integer
 
 FIELDS = ("stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien")
@@ -172,8 +173,16 @@ def extract_medicine_table(image, ocr_engine, *, detect_header: Callable,
     if not anchors:
         return fail("NEEDS_REVIEW", "STT_ROW_ANCHORS_NOT_FOUND", headers)
 
-    footers = [t["cy"] for t in tokens if t["cy"] > anchors[-1]["cy"] and _is_footer(t["text"])]
-    footer_y = min(footers) if footers else float("inf")
+    footers = [t for t in tokens if t["cy"] > anchors[-1]["cy"] and _is_footer(t["text"])]
+    footer = min(footers, key=lambda t: t["cy"]) if footers else None
+    footer_y = footer["cy"] if footer else float("inf")
+    document_total = None
+    if footer is not None:
+        # The printed grand total, read from the amount column on the footer line.
+        document_total = footer_amount(
+            tokens, footer, hm["thanh_tien"]["cx"],
+            row_tolerance=max(15, footer["y2"] - footer["y1"]),
+            column_tolerance=max(40, abs(hm["thanh_tien"]["cx"] - hm["don_gia"]["cx"]) * .6))
     centers = [h["cx"] for h in headers]
     col_fields = [h["field"] for h in headers]
 
@@ -225,9 +234,12 @@ def extract_medicine_table(image, ocr_engine, *, detect_header: Callable,
     items = []
     for idx, anchor in enumerate(anchors):
         warnings, field_values, raw_by_field = [], {}, {}
+        # OCR box ids behind each field, so a reviewer can see the source pixels.
+        evidence = {"stt": [anchor["id"]], "ten_dich_vu": [p["box_id"] for p in nameparts[idx]]}
         for field in ("so_luong", "don_vi_tinh", "don_gia", "thanh_tien"):
             found = groups[field][idx]
             raw_by_field[field] = [t["text"] for t in found]
+            evidence[field] = [t["id"] for t in found]
             if len(found) == 0:
                 value = None
                 warnings.append("MISSING_"+field.upper())
@@ -252,6 +264,7 @@ def extract_medicine_table(image, ocr_engine, *, detect_header: Callable,
                       "notes": notes[idx], "calculated_amount": calculated,
                       "amount_difference": difference, "derived_unit_price_hint": hint,
                       "raw_cells": raw_by_field, "name_source_fragments": nameparts[idx],
+                      "evidence_box_ids": evidence,
                       "name_ocr_confidence": min((p["confidence"] for p in nameparts[idx]), default=None),
                       "name_verification": "UNVERIFIED", "requires_review": bool(warnings),
                       "warnings": warnings})
@@ -262,7 +275,8 @@ def extract_medicine_table(image, ocr_engine, *, detect_header: Callable,
         warnings.append("UNASSIGNED_COLUMN_TOKENS")
     return {"status": "EXTRACTED", "document_type": "MEDICINE_INVOICE", "layout": "MEDICINE_TABLE",
             "headers": headers, "items": items, "detected_rows": len(items), "review_count": review_count,
-            "unassigned_cells": raw_unused, "warnings": warnings, "ready_for_rpa": False,
+            "unassigned_cells": raw_unused, "document_total": document_total,
+            "warnings": warnings, "ready_for_rpa": False,
             "ocr_box_count": len(tokens), "processing_time": round(time.perf_counter()-started, 3)}
 
 
@@ -371,11 +385,23 @@ def finalize_medicine_document(extraction):
         item["requires_review"] = True
         item["qa_status"] = "VALIDATION_ERROR" if errors else "PENDING_NAME_CONFIRMATION"
         bad += bool(errors)
+    # Every row can balance on its own and the document still miss a row:
+    # only the printed grand total shows that.
+    total_check = reconcile_total("thanh_tien", [it.get("thanh_tien") for it in items],
+                                  output.get("document_total"))
+    output["total_check"] = total_check
+    if total_check["status"] == "MISMATCH":
+        output["warnings"].append("TOTAL_MISMATCH")
+    elif total_check["status"] == "NOT_FOUND":
+        output["warnings"].append("DOCUMENT_TOTAL_NOT_FOUND")
     output["qa_status"] = ("BLOCKED_VALIDATION_ERRORS" if bad else
-                            "BLOCKED_UNASSIGNED_NUMERIC_CELLS" if actionable else "PENDING_HUMAN_REVIEW")
+                            "BLOCKED_UNASSIGNED_NUMERIC_CELLS" if actionable else
+                            "BLOCKED_TOTAL_MISMATCH" if total_check["status"] == "MISMATCH" else
+                            "PENDING_HUMAN_REVIEW")
     output["qa_summary"] = {"total_rows": len(items), "formula_ok_rows": ok,
                             "validation_error_rows": bad, "names_pending_confirmation": unverified,
-                            "has_unassigned_cells": bool(actionable)}
+                            "has_unassigned_cells": bool(actionable),
+                            "total_check_status": total_check["status"]}
     output["review_count"] = len(items)
     return output
 
