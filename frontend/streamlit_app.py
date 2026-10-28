@@ -12,6 +12,8 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+from invoiceflow_ai.evidence import FIELD_COLORS, render_overlay
+
 st.set_page_config(page_title="InvoiceFlow AI | Review", page_icon="🧾", layout="wide")
 st.title("🧾 InvoiceFlow AI")
 st.caption("OCR → Document Router → KIE → Human Review → Approval → CSV handoff | Local demo")
@@ -44,7 +46,10 @@ with st.sidebar:
     st.subheader("API")
     st.code(api_url)
     health = api("GET", "/health")
-    st.success("Backend online") if health is not None else st.error("Backend offline")
+    if health is not None:
+        st.success("Backend online")
+    else:
+        st.error("Backend offline")
     tab = st.radio("Workflow", ["Upload", "Documents", "Review & approve", "Audit"])
 
 if tab == "Upload":
@@ -82,7 +87,38 @@ elif tab == "Review & approve":
         st.stop()
     doc = response.json()
     st.write(f"**Status:** {doc['status']} · **Detected type:** {doc['original_document_type']}")
-    st.info("Confirm every value against the ORIGINAL IMAGE before submitting. The backend does not store the image, so open your local source file separately. This UI cannot verify a name for you.")
+    st.info("Confirm every value against the ORIGINAL IMAGE before submitting. Highlighted boxes show where "
+            "the extractor read each value; they help you look, they do not verify anything for you.")
+    evidence_response = api("GET", f"/api/v1/documents/{doc_id}/evidence")
+    evidence = evidence_response.json() if evidence_response else {"rows": [], "total_checks": []}
+    for check in evidence.get("total_checks", []):
+        label = f"Printed total ({check['field']}): {check['document_total']:,}, sum of rows: {check['rows_sum']:,}"
+        if check["status"] == "MISMATCH":
+            st.error(f"{label}. Difference {check['difference']:,}: a row may be missing or misread.")
+        elif check["status"] == "MATCH":
+            st.caption(f"✓ {label}.")
+    if doc.get("has_image"):
+        image_response = api("GET", f"/api/v1/documents/{doc_id}/image")
+        if image_response is not None:
+            rows = evidence.get("rows", [])
+            choices = ["All rows"] + [f"Row {r['index'] + 1} (STT {r['stt']})" for r in rows]
+            picked = st.selectbox("Highlight evidence for", choices, key=f"evidence_row_{doc_id}")
+            row_index = None if picked == "All rows" else choices.index(picked) - 1
+            st.image(render_overlay(image_response.content, evidence, row_index=row_index),
+                     caption="Stored source image with OCR evidence boxes", use_container_width=True)
+            legend = " · ".join(f"<span style='color:rgb{FIELD_COLORS[f]}'>■</span> {f}"
+                                for f in ("stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien"))
+            st.markdown(legend, unsafe_allow_html=True)
+            if not evidence.get("has_geometry"):
+                st.caption("This result has no OCR box geometry (older import); check the whole image.")
+    elif doc["status"] != "APPROVED":
+        st.warning("No source image stored. Attach the de-identified image this result came from "
+                   "to see evidence boxes; it must be the exact image OCR ran on.")
+        source = st.file_uploader("Source image", type=["png", "jpg", "jpeg", "webp"], key=f"attach_{doc_id}")
+        if source is not None and st.button("Attach source image") and api(
+                "PUT", f"/api/v1/documents/{doc_id}/image",
+                files={"file": (source.name, source.getvalue(), source.type)}) is not None:
+            st.rerun()
     orig = doc.get("reviewed_items") or doc["raw_result"].get("items", [])
     cols = ["stt", "ten_dich_vu", "so_luong", "don_vi_tinh", "don_gia", "thanh_tien"]
     if not orig:

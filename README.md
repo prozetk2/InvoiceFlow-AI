@@ -49,6 +49,16 @@ The package baseline reported **41/41 passing offline automated tests** plus a s
 
 **Reproduce:** `python -m pytest -q` and `python scripts/demo_workflow.py`. To regenerate the four graphics from the documented example values, install Pillow (`python -m pip install pillow`) and run `python scripts/render_demo_results.py`.
 
+### 5. Evidence viewer and document total check (synthetic document)
+
+![Review screen highlighting the OCR boxes behind row 2 and flagging a printed total that does not match the rows](assets/results/05-evidence-viewer.png)
+
+A real screenshot of the review UI on a **generated** document from the evaluation set (`eval/synthetic/med_04_dropped_row`). OCR missed row 3 entirely; every remaining row still balances on its own, but the printed total (137,000) does not match the sum of rows (122,000), so the document is blocked with `BLOCKED_TOTAL_MISMATCH`. Selecting a row draws the OCR boxes each value was read from on the stored source image.
+
+### 6. Reproducible evaluation
+
+`make eval` regenerates the synthetic set, replays its OCR through the current pipeline and scores it with the metrics in [Evaluation](docs/EVALUATION.md). The same commands score real, de-identified labelled data (`invoiceflow eval GT_DIR PRED_DIR`). Synthetic scores only exercise code paths; **no accuracy on real scans is claimed.**
+
 Read [Results & limitations](docs/RESULTS.md) for evidence provenance, recorded outputs, and which claims are **not** validated.
 
 ## At a glance

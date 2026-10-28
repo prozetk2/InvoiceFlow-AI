@@ -10,6 +10,7 @@ LLM requests, or live RPA execution are performed here.
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -26,6 +27,7 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .evidence import build_evidence
 from .validation import EXPORT_COLUMNS, is_formula_like, is_placeholder_name, payload_sha256
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
@@ -33,6 +35,7 @@ MAX_ITEMS = 200
 MAX_IMAGE_PIXELS = 16_000_000
 DEFAULT_DB_PATH = "data/invoiceflow.sqlite3"
 MIN_REASON_LENGTH = 10
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
 def _now() -> str:
@@ -96,6 +99,17 @@ def _init_db(db_path: str) -> None:
             details_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )""")
+        # Source image kept as review evidence: the exact bytes OCR saw, so
+        # evidence box coordinates line up. Same retention as the OCR text.
+        con.execute("""CREATE TABLE IF NOT EXISTS document_images (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id),
+            content_type TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
         existing = {r["name"] for r in con.execute("PRAGMA table_info(documents)")}
         for column, ddl in _DOCUMENT_MIGRATIONS.items():
             if column not in existing:
@@ -112,7 +126,9 @@ def _record(con: sqlite3.Connection, doc_id: str, action: str,
 
 
 def _get(con: sqlite3.Connection, document_id: str) -> sqlite3.Row:
-    row = con.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
+    row = con.execute(
+        "SELECT d.*, EXISTS(SELECT 1 FROM document_images i WHERE i.document_id=d.id) AS has_image "
+        "FROM documents d WHERE d.id=?", (document_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "Document not found")
     return row
@@ -132,6 +148,7 @@ def _public(row: sqlite3.Row) -> dict:
         "approver_id": row["approver_id"],
         "approved_payload_sha256": row["approved_payload_sha256"],
         "review_version": row["review_version"],
+        "has_image": bool(row["has_image"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -262,6 +279,37 @@ def _review_changes(originals: list[dict], reviewed: list[dict]) -> dict:
             "removed_original_stts": sorted(removed, key=str)}
 
 
+def _decode_image(data: bytes, content_type: str | None) -> dict:
+    """Validate an uploaded image; return the decoded RGB image plus what to store."""
+    if content_type not in IMAGE_TYPES:
+        raise HTTPException(415, "Only PNG, JPEG or WEBP supported")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Image exceeds 8 MB")
+    try:
+        from PIL import Image
+        image = Image.open(io.BytesIO(data))
+        # Dimensions come from the header: reject before decoding pixels.
+        if image.width * image.height > MAX_IMAGE_PIXELS:
+            raise ValueError("Image dimensions too large")
+        image.load()
+        image = image.convert("RGB")
+    except Exception as exc:
+        raise HTTPException(422, "Invalid image") from exc
+    return {"image": image, "content_type": content_type, "data": data,
+            "sha256": hashlib.sha256(data).hexdigest(), "width": image.width, "height": image.height}
+
+
+def _store_image(con: sqlite3.Connection, document_id: str, upload: dict) -> dict:
+    con.execute(
+        "INSERT INTO document_images(document_id, content_type, sha256, width, height, data, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (document_id, upload["content_type"], upload["sha256"], upload["width"], upload["height"],
+         upload["data"], _now()),
+    )
+    return {"sha256": upload["sha256"], "width": upload["width"], "height": upload["height"],
+            "bytes": len(upload["data"])}
+
+
 def _excel_safe(value: Any) -> Any:
     """Protect CSV consumers against spreadsheet formula injection."""
     if not isinstance(value, str):
@@ -272,12 +320,14 @@ def _excel_safe(value: Any) -> Any:
 
 
 def create_app(*, db_path: str | None = None, api_key: str | None = None,
-               approver_api_key: str | None = None) -> FastAPI:
+               approver_api_key: str | None = None, store_images: bool | None = None) -> FastAPI:
     """Build the review API.
 
     `api_key` is the operator credential. When `approver_api_key` (or
     INVOICEFLOW_APPROVER_API_KEY) is set, only that key may approve and it
     may not import or review, so review and approval need two credentials.
+    `store_images` (or INVOICEFLOW_STORE_IMAGES, default true) keeps uploaded
+    images so reviewers can see the evidence behind each value.
     """
     db_path = db_path or os.environ.get("INVOICEFLOW_DB_PATH", DEFAULT_DB_PATH)
     api_key = api_key or os.environ.get("INVOICEFLOW_API_KEY")
@@ -286,6 +336,9 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None,
         raise RuntimeError("Set INVOICEFLOW_API_KEY to a random string of at least 16 characters")
     if approver_api_key is not None and (len(approver_api_key) < 16 or approver_api_key == api_key):
         raise RuntimeError("INVOICEFLOW_APPROVER_API_KEY must be at least 16 characters and differ from the operator key")
+    if store_images is None:
+        store_images = os.environ.get("INVOICEFLOW_STORE_IMAGES", "true").strip().lower() not in {
+            "0", "false", "no", "off"}
     _init_db(db_path)
 
     app = FastAPI(title="InvoiceFlow AI Review API", version="0.6.0")
@@ -311,7 +364,7 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None,
             raise HTTPException(403, "Approval requires the approver API key")
         return role
 
-    def store_result(result: dict, *, actor: str, source: str = "colab") -> dict:
+    def store_result(result: dict, *, actor: str, source: str = "colab", upload: dict | None = None) -> dict:
         if not isinstance(result, dict) or not isinstance(result.get("items"), list):
             raise HTTPException(422, "Invalid extraction result")
         if len(result["items"]) > MAX_ITEMS:
@@ -340,6 +393,8 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None,
                 "original_status": str(result.get("status") or ""),
                 "original_qa": qa,
             })
+            if upload is not None:
+                _record(con, doc_id, "IMAGE_STORED", actor, _store_image(con, doc_id, upload))
             return _public(_get(con, doc_id))
 
     @app.get("/health")
@@ -355,27 +410,54 @@ def create_app(*, db_path: str | None = None, api_key: str | None = None,
     def upload_document(file: UploadFile = File(...)):
         if app.state.document_processor is None:
             raise HTTPException(503, "OCR pipeline not configured in this process")
-        if file.content_type not in {"image/png", "image/jpeg", "image/webp"}:
-            raise HTTPException(415, "Only PNG, JPEG or WEBP supported")
-        data = file.file.read(MAX_UPLOAD_BYTES + 1)
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "Image exceeds 8 MB")
+        upload = _decode_image(file.file.read(MAX_UPLOAD_BYTES + 1), file.content_type)
         try:
-            from PIL import Image
-            image = Image.open(io.BytesIO(data))
-            # Dimensions come from the header: reject before decoding pixels.
-            if image.width * image.height > MAX_IMAGE_PIXELS:
-                raise ValueError("Image dimensions too large")
-            image.load()
-            image = image.convert("RGB")
-        except Exception as exc:
-            raise HTTPException(422, "Invalid image") from exc
-        try:
-            result = app.state.document_processor(image)
+            result = app.state.document_processor(upload["image"])
         except Exception as exc:
             # Do not leak patient data or OCR tokens via error response.
             raise HTTPException(500, "Extraction failed; see server logs") from exc
-        return store_result(result, actor="upload", source="image_upload")
+        return store_result(result, actor="upload", source="image_upload",
+                            upload=upload if store_images else None)
+
+    @app.put("/api/v1/documents/{document_id}/image", dependencies=[Depends(require_operator)],
+             status_code=201)
+    def attach_image(document_id: str, file: UploadFile = File(...)):  # noqa: B008 (FastAPI idiom)
+        """Attach the source image to an imported result (e.g. from Colab), once."""
+        if not store_images:
+            raise HTTPException(403, "Image storage is disabled on this server")
+        upload = _decode_image(file.file.read(MAX_UPLOAD_BYTES + 1), file.content_type)
+        with _conn(db_path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = _get(con, document_id)
+            if row["has_image"]:
+                raise HTTPException(409, "Document already has a source image")
+            if row["status"] == "APPROVED":
+                raise HTTPException(409, "Evidence cannot be added after approval")
+            size = (_load_json(row["raw_result_json"]) or {}).get("image_size")
+            # OCR box coordinates are only meaningful on the image OCR saw.
+            if size and list(size) != [upload["width"], upload["height"]]:
+                raise HTTPException(422, f"Image is {upload['width']}x{upload['height']}, "
+                                         f"but OCR ran on {size[0]}x{size[1]}")
+            _record(con, document_id, "IMAGE_ATTACHED", "operator", _store_image(con, document_id, upload))
+            return _public(_get(con, document_id))
+
+    @app.get("/api/v1/documents/{document_id}/image", dependencies=[Depends(authorize)])
+    def get_image(document_id: str):
+        with _conn(db_path) as con:
+            _get(con, document_id)
+            image = con.execute("SELECT content_type, sha256, data FROM document_images WHERE document_id=?",
+                                (document_id,)).fetchone()
+        if image is None:
+            raise HTTPException(404, "No source image stored for this document")
+        return Response(bytes(image["data"]), media_type=image["content_type"],
+                        headers={"Cache-Control": "no-store", "X-Image-SHA256": image["sha256"]})
+
+    @app.get("/api/v1/documents/{document_id}/evidence", dependencies=[Depends(authorize)])
+    def get_evidence(document_id: str):
+        """OCR boxes behind each extracted value, for drawing on the source image."""
+        with _conn(db_path) as con:
+            row = _get(con, document_id)
+        return {**build_evidence(_load_json(row["raw_result_json"]) or {}), "has_image": bool(row["has_image"])}
 
     @app.get("/api/v1/documents", dependencies=[Depends(authorize)])
     def list_documents(limit: int = 20):
