@@ -1,0 +1,24 @@
+{
+  "document_type": "MEDICINE_INVOICE",
+  "status": "EXTRACTED",
+  "qa_status": "PENDING_HUMAN_REVIEW",
+  "ready_for_rpa": false,
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "DEMO Vitamin 100mg",
+      "so_luong": 2,
+      "don_vi_tinh": "Viên",
+      "don_gia": 1500,
+      "thanh_tien": 3000
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "DEMO Saline 10ml",
+      "so_luong": 1,
+      "don_vi_tinh": "Chai",
+      "don_gia": 12000,
+      "thanh_tien": 12000
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+# Python / tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+
+# Sensitive or local runtime content
+/data/*
+!/data/.gitkeep
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+/uploads/
+/results/
+/outputs/
+/models/
+/logs/
+
+# Training / medical records / large binaries
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.pdf
+*.xlsx
+*.csv
+*.parquet
+*.jsonl
+*.zip
+!examples/*.json
+!examples/*.csv
+!docs/assets/*.png
+# Generated, de-identified README evidence cards are safe to publish.
+!assets/results/*.png
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

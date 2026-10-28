@@ -1,0 +1,5 @@
+---
+description: Mandatory safety invariants for InvoiceFlow AI code changes
+alwaysApply: true
+---
+Before editing code, read `AGENTS.md`, `RULES.md` and, for OCR/KIE tasks, `agent-skill.md`. No real patient data or credentials in Git. No external LLM by default. No inferred numeric values without OCR evidence. Extraction never grants RPA permission. Export requires persisted review and explicit approval. Add synthetic tests and run `python -m pytest`.
