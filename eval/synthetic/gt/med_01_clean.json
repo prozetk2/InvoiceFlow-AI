@@ -1,0 +1,31 @@
+{
+  "document_family": "MEDICINE_INVOICE",
+  "split": "dev",
+  "synthetic_case": "clean baseline",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "Amoxicillin 500mg",
+      "so_luong": 20,
+      "don_vi_tinh": "Viên",
+      "don_gia": 1200,
+      "thanh_tien": 24000
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Paracetamol 500mg",
+      "so_luong": 10,
+      "don_vi_tinh": "Viên",
+      "don_gia": 800,
+      "thanh_tien": 8000
+    },
+    {
+      "stt": 3,
+      "ten_dich_vu": "Siro ho thảo dược 100ml",
+      "so_luong": 1,
+      "don_vi_tinh": "Chai",
+      "don_gia": 45000,
+      "thanh_tien": 45000
+    }
+  ]
+}

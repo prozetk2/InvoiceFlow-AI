@@ -1,0 +1,23 @@
+{
+  "document_family": "MEDICINE_INVOICE",
+  "split": "test",
+  "synthetic_case": "one unit price not read",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "Omeprazol 20mg",
+      "so_luong": 14,
+      "don_vi_tinh": "Viên",
+      "don_gia": 2100,
+      "thanh_tien": 29400
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Loratadin 10mg",
+      "so_luong": 10,
+      "don_vi_tinh": "Viên",
+      "don_gia": 1500,
+      "thanh_tien": 15000
+    }
+  ]
+}

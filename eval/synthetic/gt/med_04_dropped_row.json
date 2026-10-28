@@ -1,0 +1,39 @@
+{
+  "document_family": "MEDICINE_INVOICE",
+  "split": "test",
+  "synthetic_case": "a whole row lost; only the footer total reveals it",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "Cefuroxim 250mg",
+      "so_luong": 10,
+      "don_vi_tinh": "Viên",
+      "don_gia": 6500,
+      "thanh_tien": 65000
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Men vi sinh",
+      "so_luong": 10,
+      "don_vi_tinh": "Gói",
+      "don_gia": 4200,
+      "thanh_tien": 42000
+    },
+    {
+      "stt": 3,
+      "ten_dich_vu": "Nước muối sinh lý 10ml",
+      "so_luong": 5,
+      "don_vi_tinh": "Lọ",
+      "don_gia": 3000,
+      "thanh_tien": 15000
+    },
+    {
+      "stt": 4,
+      "ten_dich_vu": "Vitamin B1 100mg",
+      "so_luong": 30,
+      "don_vi_tinh": "Viên",
+      "don_gia": 500,
+      "thanh_tien": 15000
+    }
+  ]
+}

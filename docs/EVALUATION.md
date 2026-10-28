@@ -49,6 +49,31 @@ Document coverage = routed to supported family / total documents. Abstention = U
 | Human review entry | Literal `REVIEW` used as name | Reject placeholder, require correction |
 | Workflow misuse | Export while PENDING_REVIEW | HTTP 409 |
 
+## Running the harness
+
+The metrics above are implemented in `src/invoiceflow_ai/evaluation.py` and exposed by the CLI.
+
+**Inputs.** One ground-truth JSON per document, plus one prediction JSON (a saved pipeline result) under the same file name:
+
+```json
+{"document_family": "MEDICINE_INVOICE", "split": "test",
+ "items": [{"stt": 1, "ten_dich_vu": "...", "so_luong": 2, "don_vi_tinh": "Viên", "don_gia": 1500, "thanh_tien": 3000}]}
+```
+
+`document_family` is `MEDICINE_INVOICE`, `MEDICAL_PAYMENT` or `OTHER`; payment rows may add `payment_details`. A GT file with no prediction counts as a failed document.
+
+**Scoring.**
+
+```bash
+invoiceflow eval GT_DIR PRED_DIR --split test --output report.json --meta ocr_model=PP-OCRv5 dataset=v1
+```
+
+Rows are matched by STT when both sides have unique STTs, otherwise by order; the report states which. The JSON report has per-document results (missed STTs, wrong field names) but never names or amounts, so it can be shared without patient data.
+
+**Producing predictions without re-running OCR.** `invoiceflow extract IMAGE --output pred/x.json --save-ocr ocr/x.json` saves the raw OCR next to the result. `invoiceflow eval-predict ocr/ --output pred/` later replays those OCR fixtures through the current routing, extraction and QA code, so extractor changes can be compared on the same OCR in seconds, offline.
+
+**Synthetic set.** `eval/synthetic/` holds eight generated documents (`scripts/make_synthetic_eval_set.py`), each injecting one named failure: OCR name typo, missing unit price, dropped row (caught by the document total check), unreadable header, misread payment amount, and an unsupported document that must abstain. `make eval` runs the full loop, and `tests/test_evaluation.py` pins the per-document outcomes so a behaviour change fails CI. These numbers exercise the code paths only; they are **not** accuracy estimates for real scans.
+
 ## Offline regression
 
 ```bash

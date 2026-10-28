@@ -1,0 +1,49 @@
+{
+  "document_family": "MEDICAL_PAYMENT",
+  "split": "test",
+  "synthetic_case": "clean payment receipt",
+  "items": [
+    {
+      "stt": 1,
+      "ten_dich_vu": "Khám bệnh",
+      "so_luong": 1,
+      "don_vi_tinh": "Lần",
+      "don_gia": 100000,
+      "thanh_tien": 100000,
+      "payment_details": {
+        "chi_phi": 100000,
+        "bhyt_chi": 50600,
+        "so_giam": 0,
+        "benh_nhan_thanh_toan": 49400
+      }
+    },
+    {
+      "stt": 2,
+      "ten_dich_vu": "Xét nghiệm máu",
+      "so_luong": 1,
+      "don_vi_tinh": "Lần",
+      "don_gia": 368500,
+      "thanh_tien": 368500,
+      "payment_details": {
+        "chi_phi": 368500,
+        "bhyt_chi": 0,
+        "so_giam": 0,
+        "benh_nhan_thanh_toan": 368500
+      }
+    },
+    {
+      "stt": 3,
+      "ten_dich_vu": "Siêu âm ổ bụng",
+      "so_luong": 1,
+      "don_vi_tinh": "Lần",
+      "don_gia": 150000,
+      "thanh_tien": 150000,
+      "payment_details": {
+        "chi_phi": 150000,
+        "bhyt_chi": 58600,
+        "so_giam": 0,
+        "benh_nhan_thanh_toan": 91400
+      }
+    }
+  ]
+}
